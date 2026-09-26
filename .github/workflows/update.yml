@@ -8,24 +8,164 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: update-apple-emoji
+  cancel-in-progress: false
+
 jobs:
-  check-release:
+  update:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Get latest upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Checking latest Apple Emoji release..."
+          set -euo pipefail
 
-          curl -fsSL \
-            https://api.github.com/repos/samuelngs/apple-emoji-ttf/releases/latest \
-            -o release.json
+          release=$(gh api repos/samuelngs/apple-emoji-ttf/releases/latest)
 
-          echo "Latest upstream release:"
-          grep '"tag_name"' release.json
+          tag=$(echo "$release" | jq -r '.tag_name')
+          published=$(echo "$release" | jq -r '.published_at')
 
-          echo "Release assets:"
-          grep '"name"' release.json
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "Could not fetch upstream release"
+            exit 1
+          fi
+
+          echo "Latest release: $tag"
+          echo "Published: $published"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate RPM release
+        id: version
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Expected format:
+          # anything-YYYYMMDD-commit_hash
+          if [[ ! "$TAG" =~ ([0-9]{8})-([0-9a-fA-F]{7,40})$ ]]; then
+            echo "Unexpected upstream tag format: $TAG"
+            exit 1
+          fi
+
+          date="${BASH_REMATCH[1]}"
+          hash="${BASH_REMATCH[2]:0:8}"
+
+          rpm_release="0.${date}.${hash}"
+
+          echo "RPM release: $rpm_release"
+          echo "rpm_release=$rpm_release" >> "$GITHUB_OUTPUT"
+
+      - name: Update spec
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          RPM_RELEASE: ${{ steps.version.outputs.rpm_release }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          path = Path("apple-color-emoji.spec")
+          text = path.read_text()
+
+          tag = os.environ["TAG"]
+          rpm_release = os.environ["RPM_RELEASE"]
+
+          source = (
+              "https://github.com/samuelngs/apple-emoji-ttf/"
+              "releases/download/"
+              f"{tag}/AppleColorEmoji-Linux.ttf"
+          )
+
+          new_text, release_count = re.subn(
+              r'^Release:\s+.*$',
+              f'Release:        {rpm_release}%{{?dist}}',
+              text,
+              flags=re.MULTILINE
+          )
+
+          if release_count != 1:
+              raise RuntimeError("Could not update Release: line")
+
+          new_text, source_count = re.subn(
+              r'^Source0:\s+.*$',
+              f'Source0:        {source}',
+              new_text,
+              flags=re.MULTILINE
+          )
+
+          if source_count != 1:
+              raise RuntimeError("Could not update Source0: line")
+
+          path.write_text(new_text)
+          PY
+
+      - name: Check for changes
+        id: changes
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- apple-color-emoji.spec; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No new upstream release."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream release detected."
+            git diff -- apple-color-emoji.spec
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add apple-color-emoji.spec
+          git commit -m "Update Apple Color Emoji to ${TAG}"
+
+          for i in 1 2 3; do
+            if git push; then
+              echo "Push successful."
+              exit 0
+            fi
+
+            echo "Push failed, retrying after rebase (attempt $i)..."
+
+            if [ "$i" -lt 3 ]; then
+              git pull --rebase
+            fi
+          done
+
+          echo "Push failed after 3 attempts."
+          exit 1
+
+      - name: Report failure
+        if: ${{ failure() }}
+        run: |
+          echo "========================================"
+          echo "Apple Color Emoji update FAILED"
+          echo "========================================"
+          echo ""
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Run:      $GITHUB_RUN_ID"
+          echo "Commit:   $GITHUB_SHA"
+          echo "Branch:   $GITHUB_REF_NAME"
+          echo ""
+          echo "Check the failed step above for details."
+          echo "========================================"
