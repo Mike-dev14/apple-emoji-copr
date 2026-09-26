@@ -16,10 +16,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check latest upstream release
+      - name: Get latest upstream release
         run: |
+          echo "Checking latest Apple Emoji release..."
+
           curl -fsSL \
             https://api.github.com/repos/samuelngs/apple-emoji-ttf/releases/latest \
             -o release.json
 
-          cat release.json | grep '"tag_name"'
+          echo "Latest upstream release:"
+          grep '"tag_name"' release.json
+
+          echo "Release assets:"
+          grep '"name"' release.json
