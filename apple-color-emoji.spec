@@ -1,11 +1,11 @@
 Name:           fonts-apple-color-emoji
 Version:        2.0.0
-Release:        1%{?dist}
+Release:        0.20260722.484daf4e%{?dist}
 Summary:        Apple Color Emoji as CBDT/CBLC TTF for Linux
 
 License:        custom
 URL:            https://github.com/samuelngs/apple-emoji-ttf
-Source0:        https://github.com/samuelngs/apple-emoji-ttf/releases/latest/download/AppleColorEmoji-Linux.ttf
+Source0:        https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260722-484daf4e/AppleColorEmoji-Linux.ttf
 
 BuildArch:      noarch
 BuildRequires:  fontpackages-devel
