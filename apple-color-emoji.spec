@@ -69,3 +69,4 @@ fi
 %{_datadir}/fonts/truetype/apple-color-emoji/AppleColorEmoji.ttf
 %config(noreplace) %{_sysconfdir}/fonts/conf.d/50-apple-color-emoji.conf
 
+# webhook test
