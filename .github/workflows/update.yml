@@ -1,0 +1,25 @@
+name: Update Apple Color Emoji
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check latest upstream release
+        run: |
+          curl -fsSL \
+            https://api.github.com/repos/samuelngs/apple-emoji-ttf/releases/latest \
+            -o release.json
+
+          cat release.json | grep '"tag_name"'
