@@ -1,9 +1,12 @@
+%global font_sha256 0000000000000000000000000000000000000000000000000000000000000000
+
 Name:           fonts-apple-color-emoji
 Version:        2.0.0
 Release:        0.20260722.484daf4e%{?dist}
 Summary:        Apple Color Emoji as CBDT/CBLC TTF for Linux
 
-License:        custom
+# Proprietary Apple font, not freely redistributable
+License:        LicenseRef-Proprietary
 URL:            https://github.com/samuelngs/apple-emoji-ttf
 Source0:        https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260722-484daf4e/AppleColorEmoji-Linux.ttf
 
@@ -16,17 +19,17 @@ Requires:       fontconfig
 Apple Color Emoji as a CBDT/CBLC TTF font for Linux.
 
 %prep
+echo "%{font_sha256}  %{SOURCE0}" | sha256sum -c -
 
 %build
 
 %install
 mkdir -p %{buildroot}%{_datadir}/fonts/truetype/apple-color-emoji
 install -m 0644 %{SOURCE0} \
-    %{buildroot}%{_datadir}/fonts/truetype/apple-color-emoji/AppleColorEmoji.ttf
+  %{buildroot}%{_datadir}/fonts/truetype/apple-color-emoji/AppleColorEmoji.ttf
 
 mkdir -p %{buildroot}%{_sysconfdir}/fonts/conf.d
-
-cat > %{buildroot}%{_sysconfdir}/fonts/conf.d/50-apple-color-emoji.conf <<'EOF'
+cat > %{buildroot}%{_sysconfdir}/fonts/conf.d/50-apple-color-emoji.conf <<'CONF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
@@ -55,18 +58,17 @@ cat > %{buildroot}%{_sysconfdir}/fonts/conf.d/50-apple-color-emoji.conf <<'EOF'
     </prefer>
   </alias>
 </fontconfig>
-EOF
+CONF
 
 %post
 /usr/bin/fc-cache -f || :
 
 %postun
 if [ $1 -eq 0 ]; then
-    /usr/bin/fc-cache -f || :
+  /usr/bin/fc-cache -f || :
 fi
 
 %files
+%dir %{_datadir}/fonts/truetype/apple-color-emoji
 %{_datadir}/fonts/truetype/apple-color-emoji/AppleColorEmoji.ttf
 %config(noreplace) %{_sysconfdir}/fonts/conf.d/50-apple-color-emoji.conf
-
-# webhook test
