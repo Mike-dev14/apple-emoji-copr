@@ -18,57 +18,82 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      # TODO: pin to a full commit SHA (e.g. with `pinact`), tags can be moved
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Get latest upstream release
-        id: release
+      - name: Get and verify latest upstream release
+        id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
+          asset_name="AppleColorEmoji-Linux.ttf"
+
           release=$(gh api repos/samuelngs/apple-emoji-ttf/releases/latest)
+          tag=$(echo "$release" | jq -r '.tag_name // empty')
 
-          tag=$(echo "$release" | jq -r '.tag_name')
-          published=$(echo "$release" | jq -r '.published_at')
-
-          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+          if [ -z "$tag" ]; then
             echo "Could not fetch upstream release"
             exit 1
           fi
 
-          echo "Latest release: $tag"
-          echo "Published: $published"
-
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Calculate RPM release
-        id: version
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          # Expected format:
-          # anything-YYYYMMDD-commit_hash
-          if [[ ! "$TAG" =~ ([0-9]{8})-([0-9a-fA-F]{7,40})$ ]]; then
-            echo "Unexpected upstream tag format: $TAG"
+          # Strict format: anything-YYYYMMDD-commit_hash
+          re='^[A-Za-z0-9._-]+-([0-9]{8})-([0-9a-fA-F]{7,40})$'
+          if [[ ! "$tag" =~ $re ]]; then
+            echo "Unexpected upstream tag format: $tag"
             exit 1
           fi
 
           date="${BASH_REMATCH[1]}"
           hash="${BASH_REMATCH[2]:0:8}"
-
           rpm_release="0.${date}.${hash}"
 
+          # The asset must exist in this release
+          if ! echo "$release" | jq -e --arg n "$asset_name" \
+               '.assets[] | select(.name == $n)' > /dev/null; then
+            echo "Asset $asset_name not found in release $tag"
+            exit 1
+          fi
+
+          source_url="https://github.com/samuelngs/apple-emoji-ttf/releases/download/${tag}/${asset_name}"
+
+          curl -fsSL --retry 3 --max-time 120 -o /tmp/font.ttf "$source_url"
+
+          size=$(stat -c %s /tmp/font.ttf)
+          magic=$(head -c4 /tmp/font.ttf | od -An -tx1 | tr -d ' \n')
+
+          if [ "$size" -lt 1000000 ]; then
+            echo "Downloaded file is suspiciously small: $size bytes"
+            exit 1
+          fi
+
+          # TrueType (00010000) or OpenType/CFF (OTTO)
+          if [ "$magic" != "00010000" ] && [ "$magic" != "4f54544f" ]; then
+            echo "Downloaded file is not a font (magic: $magic)"
+            exit 1
+          fi
+
+          sha256=$(sha256sum /tmp/font.ttf | cut -d' ' -f1)
+
+          echo "Tag:         $tag"
           echo "RPM release: $rpm_release"
-          echo "rpm_release=$rpm_release" >> "$GITHUB_OUTPUT"
+          echo "Size:        $size"
+          echo "SHA256:      $sha256"
+
+          {
+            echo "tag=$tag"
+            echo "rpm_release=$rpm_release"
+            echo "source_url=$source_url"
+            echo "sha256=$sha256"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update spec
         env:
-          TAG: ${{ steps.release.outputs.tag }}
-          RPM_RELEASE: ${{ steps.version.outputs.rpm_release }}
+          RPM_RELEASE: ${{ steps.upstream.outputs.rpm_release }}
+          SOURCE_URL: ${{ steps.upstream.outputs.source_url }}
+          SHA256: ${{ steps.upstream.outputs.sha256 }}
         run: |
           set -euo pipefail
 
@@ -80,34 +105,40 @@ jobs:
           path = Path("apple-color-emoji.spec")
           text = path.read_text()
 
-          tag = os.environ["TAG"]
           rpm_release = os.environ["RPM_RELEASE"]
+          source = os.environ["SOURCE_URL"]
+          sha = os.environ["SHA256"]
+          ZERO = "0" * 64
 
-          source = (
-              "https://github.com/samuelngs/apple-emoji-ttf/"
-              "releases/download/"
-              f"{tag}/AppleColorEmoji-Linux.ttf"
-          )
+          def get(pattern):
+              m = re.search(pattern, text, flags=re.MULTILINE)
+              if not m:
+                  raise RuntimeError(f"Pattern not found in spec: {pattern}")
+              return m.group(1).strip()
 
-          new_text, release_count = re.subn(
-              r'^Release:\s+.*$',
-              f'Release:        {rpm_release}%{{?dist}}',
-              text,
-              flags=re.MULTILINE
-          )
+          def replace(pattern, value, s):
+              # lambda avoids backslash/group interpretation in the value
+              new, n = re.subn(pattern, lambda m: value, s, flags=re.MULTILINE)
+              if n != 1:
+                  raise RuntimeError(f"Could not update line: {pattern}")
+              return new
 
-          if release_count != 1:
-              raise RuntimeError("Could not update Release: line")
+          old_source = get(r'^Source0:\s+(.*)$')
+          old_sha = get(r'^%global\s+font_sha256\s+(\S+)$')
 
-          new_text, source_count = re.subn(
-              r'^Source0:\s+.*$',
-              f'Source0:        {source}',
-              new_text,
-              flags=re.MULTILINE
-          )
+          # Same tag but different file = upstream replaced the asset. Stop and look.
+          if old_source == source and old_sha not in (sha, ZERO):
+              raise RuntimeError(
+                  "Upstream asset changed under the same tag "
+                  f"(old sha {old_sha}, new sha {sha}). Check manually."
+              )
 
-          if source_count != 1:
-              raise RuntimeError("Could not update Source0: line")
+          new_text = replace(r'^Release:\s+.*$',
+                             f'Release:        {rpm_release}%{{?dist}}', text)
+          new_text = replace(r'^Source0:\s+.*$',
+                             f'Source0:        {source}', new_text)
+          new_text = replace(r'^%global\s+font_sha256\s+\S+$',
+                             f'%global font_sha256 {sha}', new_text)
 
           path.write_text(new_text)
           PY
@@ -129,7 +160,7 @@ jobs:
       - name: Commit and push
         if: steps.changes.outputs.changed == 'true'
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ steps.upstream.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -145,7 +176,7 @@ jobs:
               exit 0
             fi
 
-            echo "Push failed, retrying after rebase (attempt $i)..."
+            echo "Push failed (attempt $i)."
 
             if [ "$i" -lt 3 ]; then
               git pull --rebase
@@ -154,18 +185,3 @@ jobs:
 
           echo "Push failed after 3 attempts."
           exit 1
-
-      - name: Report failure
-        if: ${{ failure() }}
-        run: |
-          echo "========================================"
-          echo "Apple Color Emoji update FAILED"
-          echo "========================================"
-          echo ""
-          echo "Workflow: $GITHUB_WORKFLOW"
-          echo "Run:      $GITHUB_RUN_ID"
-          echo "Commit:   $GITHUB_SHA"
-          echo "Branch:   $GITHUB_REF_NAME"
-          echo ""
-          echo "Check the failed step above for details."
-          echo "========================================"
